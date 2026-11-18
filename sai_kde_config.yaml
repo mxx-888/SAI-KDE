@@ -1,0 +1,95 @@
+# SAI-KDE configuration reconstructed from the manuscript:
+# "A Kernel Density Estimation-based Sample Reweighting Strategy for Extreme Evapotranspiration Estimation"
+# Source: Sections 2.1-2.4 of land-4690385 (2026-11-18 revision).
+# IMPORTANT: null means not explicitly specified in the manuscript; check actual code before running.
+
+experiment:
+  name: SAI-KDE
+  framework: pytorch
+  task: same_day_et_estimation
+  random_seed: null  # fixed in Python/NumPy/PyTorch, exact integer not reported
+  deterministic_cudnn: true
+
+model:
+  backbone: SAI
+  backbone_unchanged_from_baseline: true
+  multitask_outputs: [ET, H]
+  sai_block_count: null
+  hidden_dimension: null
+  attention_heads: null
+  # Fill unspecified architecture parameters from the actual implementation.
+
+data:
+  source: FLUXNET2015
+  target: ET
+  auxiliary_target: H
+  vegetation_group_field: IGBP
+  vegetation_groups: [GRA, WSA, SAV, EBF, DBF, MF, ENF, WET, CRO, OSH, CSH]
+  split_unit: flux_tower_site
+  disjoint_train_validation_test_sites: true
+  fit_preprocessing_on_training_only: true
+  train_sites_file: null  # not listed individually in manuscript
+  validation_sites_file: null
+  test_sites_file: null  # see Table A1 for 16 test-site names
+
+kde:
+  enabled: true
+  applied_during: training_only
+  fit_labels_from: training_only
+  density_groups: IGBP
+  histogram_bins: 512
+  histogram_range: training_target_min_max
+  target_normalization_for_density: false
+  bandwidth_rule: silverman
+  min_bandwidth: 1.0e-6
+  gaussian_kernel_truncate_std: 3.0
+  gaussian_kernel_normalize_to_sum_one: true
+  convolution_padding: zero
+  convolution_output_length: same
+  density_interpolation: linear
+  density_out_of_range: nearest_boundary_bin
+  density_normalization: divide_by_group_maximum
+  minimum_group_samples: 50
+  insufficient_group_fallback: global_training_kde
+  weight_mapping: linear_density_decreasing
+  weight_strength_max: 0.8
+  weight_strength_warmup_epochs: 90
+  weight_strength_warmup_schedule: linear
+  weight_mean_normalization: global_training_mean
+  weight_clip: [0.2, 2.0]
+  weight_mapping_epsilon: 1.0e-6
+  weight_normalization_epsilon: 1.0e-12
+  weighted_et_mse_denominator_epsilon: null  # verify exact equation/code
+
+loss:
+  weighted_terms: [ET_MSE]
+  unweighted_terms: [ET_fourth_power, H]
+  et_mse_coefficient: null  # manuscript defines coefficients but does not report numeric values
+  et_fourth_power_coefficient: null
+  h_coefficient: null
+
+training:
+  optimizer: SGD
+  initial_learning_rate: 0.01
+  batch_size: 128
+  max_epochs: 300
+  learning_rate_scheduler:
+    warmup: linear
+    warmup_epochs: 90
+    after_warmup: cosine_annealing
+    min_learning_rate: null
+  early_stopping:
+    enabled: true
+    patience: 50
+    start_after_warmup: true
+    monitor: validation_ET_RMSE
+    mode: min
+  checkpoint:
+    selection: minimum_validation_ET_RMSE
+    evaluate_validation_every_epochs: 1
+
+evaluation:
+  metrics: [RMSE, BIAS, R2, KGE]
+  extreme_quantiles: [0.90, 0.95, 0.99]
+  extreme_threshold_scope: null  # verify per-site vs pooled implementation
+  extreme_metric_aggregation: null  # verify site-mean vs pooled implementation

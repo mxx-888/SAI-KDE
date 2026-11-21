@@ -1,0 +1,163 @@
+# SAI-KDE reproducibility configuration
+# Reconstructed from the supplied manuscript-derived YAML and the two supplied model class definitions.
+# null = not recoverable from the supplied materials; verify against actual training/launch scripts.
+# Transformer values are constructor defaults, not independently verified training settings.
+
+experiment:
+  name: SAI-KDE
+  framework: pytorch
+  task: same_day_et_estimation
+  random_seed: null
+  deterministic_cudnn: true
+
+model:
+  backbone: SAI
+  backbone_unchanged_from_baseline: true
+  multitask_outputs: [ET, H]
+  sai:
+    class_name: MSMT_LE
+    input:
+      primary_feature_slice: 'x[:, :9]'
+      control_feature_slice: 'x[:, 9:]'
+      primary_input_features: 9
+      total_input_features: null  # determined by data; must agree with control_num
+      control_num: null  # constructor argument; equals x[:, 9:] feature count at runtime
+    projection:
+      type: linear
+      input_dimension: 9
+      output_dimension: 54  # 9 * 6, provided constructor in_features is 9
+      output_dimension_rule: 'in_features * 6'
+    hard_parameter_sharing:
+      attention_layers: null  # constructor argument
+      num_heads: null  # constructor argument; must divide 54
+      hidden_features: null  # constructor argument
+      linear_drop: null  # constructor argument
+      gate_num: null  # constructor argument
+      gate_enabled: null  # gate_True constructor argument
+      attention:
+        qkv_projection: 'Linear(54, 162)'
+        attention_dropout: 0.1
+        output_projection: 'Linear(54, 54)'
+        projection_dropout: 'linear_drop'
+        scale_rule: '(54 // num_heads) ** -0.5'
+        relation_network: 'control_num -> num_heads -> 5*num_heads -> num_heads*num_heads'
+        relation_modulates_attention: true
+        feedforward_dimensions: '54 -> hidden_features -> 54'
+        feedforward_activation: relu
+        feedforward_dropout: 'linear_drop'
+        residual_connections: true
+      experts:
+        number_of_gates: 'gate_num'
+        each_gate_dimensions: '54 -> 13 -> 54'  # int(54 / 4) = 13
+        gate_control_dimensions: 'control_num -> gate_num -> gate_num'
+        gate_control_activation: relu
+        gate_control_softmax: true
+        gate_control_dropout: 0.1
+    output_heads:
+      ET:
+        class_name: L_Layer
+        dimensions: '54 -> hidden_features -> int(hidden_features/4) -> int(hidden_features/8) -> int(hidden_features/16) -> 1'
+        hidden_activation: relu
+      H:
+        class_name: H_Layer
+        dimensions: '54 -> hidden_features -> int(hidden_features/8) -> 1'
+        hidden_activation: relu
+  transformer_baseline:
+    class_name: BasicTransformerET
+    num_features: null  # constructor argument; set from actual feature count
+    d_model: 64  # constructor default
+    nhead: 4  # constructor default
+    num_layers: 2  # constructor default
+    dim_feedforward: 128  # constructor default
+    dropout: 0.1  # constructor default
+    activation: gelu
+    batch_first: true
+    value_embedding: 'Linear(1, 64)'
+    feature_embedding: 'learnable (1, num_features, 64), normal(mean=0, std=0.02)'
+    encoder: 'TransformerEncoder(TransformerEncoderLayer, num_layers=2)'
+    post_encoder_normalization: 'LayerNorm(64)'
+    pooling: mean_over_feature_tokens
+    regression_head: '64 -> 32 -> 1 (ReLU between layers)'
+    output: ET
+
+data:
+  source: FLUXNET2015
+  target: ET
+  auxiliary_target: H
+  vegetation_group_field: IGBP
+  vegetation_groups: [GRA, WSA, SAV, EBF, DBF, MF, ENF, WET, CRO, OSH, CSH]
+  split_unit: flux_tower_site
+  disjoint_train_validation_test_sites: true
+  fit_preprocessing_on_training_only: true
+  train_site_count: 122
+  validation_site_count: 15
+  test_site_count: 16
+  train_sample_count: 228941
+  validation_sample_count: 26876
+  test_sample_count: 18602
+  split_manifest_reference: 'Manuscript Appendix A, Table A6'
+  train_sites_file: null  # Table A6 provides IDs, but no machine-readable path supplied
+  validation_sites_file: null
+  test_sites_file: null
+
+kde:
+  enabled: true
+  applied_during: training_only
+  fit_labels_from: training_only
+  density_groups: IGBP
+  histogram_bins: 512
+  histogram_range: training_target_min_max
+  target_normalization_for_density: false
+  bandwidth_rule: silverman
+  min_bandwidth: 1.0e-6
+  gaussian_kernel_truncate_std: 3.0
+  gaussian_kernel_normalize_to_sum_one: true
+  convolution_padding: zero
+  convolution_output_length: same
+  density_interpolation: linear
+  density_out_of_range: nearest_boundary_bin
+  density_normalization: divide_by_group_maximum
+  minimum_group_samples: 50
+  insufficient_group_fallback: global_training_kde
+  weight_mapping: linear_density_decreasing
+  weight_strength_max: 0.8
+  weight_strength_warmup_epochs: 90
+  weight_strength_warmup_schedule: linear
+  weight_mean_normalization: global_training_mean
+  weight_clip: [0.2, 2.0]
+  weight_mapping_epsilon: 1.0e-6
+  weight_normalization_epsilon: 1.0e-12
+  weighted_et_mse_denominator_epsilon: null
+
+loss:
+  weighted_terms: [ET_MSE]
+  unweighted_terms: [ET_fourth_power, H]
+  et_mse_coefficient: null
+  et_fourth_power_coefficient: null
+  h_coefficient: null
+
+training:
+  optimizer: SGD
+  initial_learning_rate: 0.01
+  batch_size: 128
+  max_epochs: 300
+  learning_rate_scheduler:
+    warmup: linear
+    warmup_epochs: 90
+    after_warmup: cosine_annealing
+    min_learning_rate: null
+  early_stopping:
+    enabled: true
+    patience: 50
+    start_after_warmup: true
+    monitor: validation_ET_RMSE
+    mode: min
+  checkpoint:
+    selection: minimum_validation_ET_RMSE
+    evaluate_validation_every_epochs: 1
+
+evaluation:
+  metrics: [RMSE, BIAS, R2, KGE]
+  extreme_quantiles: [0.90, 0.95, 0.99]
+  extreme_threshold_scope: null
+  extreme_metric_aggregation: null
